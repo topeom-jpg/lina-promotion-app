@@ -15,13 +15,32 @@ TARGET_PRODUCT_KEYWORDS = [
     "새로담는건강보험플러스",
 ]
 
-TIERS = [
-    {"tier": 50_000, "tier_name": "5만원 이상", "prize": 600_000, "prize_name": "60만원"},
-    {"tier": 100_000, "tier_name": "10만원 이상", "prize": 1_400_000, "prize_name": "140만원"},
-    {"tier": 200_000, "tier_name": "20만원 이상", "prize": 3_200_000, "prize_name": "320만원"},
-    {"tier": 300_000, "tier_name": "30만원 이상", "prize": 5_400_000, "prize_name": "540만원"},
-    {"tier": 500_000, "tier_name": "50만원 이상", "prize": 10_000_000, "prize_name": "1,000만원"},
-]
+PROMOTION_CONFIGS = {
+    "1형": {
+        "caption": "1형 통합건강1 금시상",
+        "monthly_rate": "익월 150%",
+        "max_rate": "13회차 최대 1,200% + @ / 금시상 최대 1,000%",
+        "tiers": [
+            {"tier": 50_000, "tier_name": "5만원 이상", "prize": 500_000, "prize_name": "50만원"},
+            {"tier": 100_000, "tier_name": "10만원 이상", "prize": 1_000_000, "prize_name": "100만원"},
+            {"tier": 200_000, "tier_name": "20만원 이상", "prize": 2_000_000, "prize_name": "200만원"},
+            {"tier": 300_000, "tier_name": "30만원 이상", "prize": 3_000_000, "prize_name": "300만원"},
+            {"tier": 500_000, "tier_name": "50만원 이상", "prize": 5_000_000, "prize_name": "500만원"},
+        ],
+    },
+    "2형": {
+        "caption": "2형 통합건강1 금시상",
+        "monthly_rate": "익월 200%",
+        "max_rate": "13회차 최대 2,400% + @ / 금시상 최대 2,000%",
+        "tiers": [
+            {"tier": 50_000, "tier_name": "5만원 이상", "prize": 600_000, "prize_name": "60만원"},
+            {"tier": 100_000, "tier_name": "10만원 이상", "prize": 1_400_000, "prize_name": "140만원"},
+            {"tier": 200_000, "tier_name": "20만원 이상", "prize": 3_200_000, "prize_name": "320만원"},
+            {"tier": 300_000, "tier_name": "30만원 이상", "prize": 5_400_000, "prize_name": "540만원"},
+            {"tier": 500_000, "tier_name": "50만원 이상", "prize": 10_000_000, "prize_name": "1,000만원"},
+        ],
+    },
+}
 
 REQUIRED_HEADERS = ["설계사", "상품명"]
 RECOMMENDED_HEADERS = ["대리점명", "지점명", "계약상태", "납입상태", "보험료"]
@@ -110,6 +129,7 @@ def read_excel_safely(uploaded_file, sheet_name: str) -> pd.DataFrame:
     df.columns = headers
     df = df.dropna(how="all")
     df = df.loc[:, [c for c in df.columns if c and c != "nan"]]
+    df.columns = [normalize_colname(c) for c in df.columns]
     return df.reset_index(drop=True)
 
 
@@ -126,11 +146,11 @@ def contains_any(series: pd.Series, keywords: Iterable[str]) -> pd.Series:
     return mask
 
 
-def current_tier_info(total_p: float) -> dict:
+def current_tier_info(total_p: float, tiers: list[dict]) -> dict:
     current = {"tier": 0, "tier_name": "미달성", "prize": 0, "prize_name": "0원"}
-    next_item: Optional[dict] = TIERS[0]
+    next_item: Optional[dict] = tiers[0]
 
-    for item in TIERS:
+    for item in tiers:
         if total_p >= item["tier"]:
             current = item
         else:
@@ -177,11 +197,12 @@ def current_tier_info(total_p: float) -> dict:
 
 
 def make_call_message(row: pd.Series) -> str:
+    promotion_type = row.get("시책유형", "")
     current_p = int(row["현재 통합건강1 P"])
     priority = row["콜우선순위"]
 
     if priority == "완료":
-        return f"현재 통합건강1 인정P {current_p:,}원으로 50만원 최고구간 달성입니다. 유지/철회 방어 체크가 우선입니다."
+        return f"[{promotion_type}] 현재 통합건강1 인정P {current_p:,}원으로 50만원 최고구간 달성입니다. 유지/철회 방어 체크가 우선입니다."
 
     shortage = int(row["부족P"])
     next_tier_name = row["다음구간명"]
@@ -189,20 +210,39 @@ def make_call_message(row: pd.Series) -> str:
     increase = int(row["추가상승액"])
 
     if current_p == 0:
-        return f"통합건강1 가동이 없습니다. {shortage:,}원 설계 시 {next_tier_name} 구간 진입, 13회차 금시상 {next_prize} 대상입니다."
+        return f"[{promotion_type}] 통합건강1 가동이 없습니다. {shortage:,}원 설계 시 {next_tier_name} 구간 진입, 13회차 금시상 {next_prize} 대상입니다."
 
     return (
-        f"현재 통합건강1 인정P {current_p:,}원입니다. "
+        f"[{promotion_type}] 현재 통합건강1 인정P {current_p:,}원입니다. "
         f"{shortage:,}원만 추가하면 {next_tier_name} 구간 진입, "
         f"13회차 금시상 {next_prize} 대상입니다. 현재 대비 추가상승액은 {increase:,}원입니다."
     )
+
+
+def get_agencies(df: pd.DataFrame, agency_col: str = "대리점명") -> list[str]:
+    if agency_col not in df.columns:
+        return []
+    values = (
+        df[agency_col]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    agencies = sorted([v for v in values.unique().tolist() if v])
+    return agencies
 
 
 # -------------------------------
 # 핵심 분석 로직
 # -------------------------------
 
-def analyze_promotion(df: pd.DataFrame, premium_col: str, filter_active: bool = True, filter_normal_payment: bool = True) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+def analyze_promotion(
+    df: pd.DataFrame,
+    premium_col: str,
+    promotion_type: str,
+    filter_active: bool = True,
+    filter_normal_payment: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     work = df.copy()
     work.columns = [normalize_colname(c) for c in work.columns]
 
@@ -213,6 +253,9 @@ def analyze_promotion(df: pd.DataFrame, premium_col: str, filter_active: bool = 
     if premium_col not in work.columns:
         raise ValueError(f"보험료 기준 컬럼 '{premium_col}'을 찾을 수 없습니다.")
 
+    tiers = PROMOTION_CONFIGS[promotion_type]["tiers"]
+
+    work["시책유형"] = promotion_type
     work["상품명"] = work["상품명"].fillna("").astype(str)
     work["보험료_숫자"] = to_number(work[premium_col])
     work["대상상품여부"] = contains_any(work["상품명"], TARGET_PRODUCT_KEYWORDS)
@@ -232,7 +275,7 @@ def analyze_promotion(df: pd.DataFrame, premium_col: str, filter_active: bool = 
     target = work[work["대상상품여부"] & status_mask & payment_mask].copy()
     target["인정보험료"] = target["보험료_숫자"].clip(upper=300_000)
 
-    grouping_cols = ["대리점명", "지점명", "설계사"]
+    grouping_cols = ["시책유형", "대리점명", "지점명", "설계사"]
     summary = (
         target.groupby(grouping_cols, dropna=False)
         .agg(
@@ -246,9 +289,18 @@ def analyze_promotion(df: pd.DataFrame, premium_col: str, filter_active: bool = 
     if summary.empty:
         summary = pd.DataFrame(columns=grouping_cols + ["대상계약건수", "원보험료합계", "현재 통합건강1 P"])
 
-    tier_df = summary["현재 통합건강1 P"].apply(current_tier_info).apply(pd.Series)
-    call_list = pd.concat([summary, tier_df], axis=1)
-    call_list["콜멘트"] = call_list.apply(make_call_message, axis=1) if not call_list.empty else []
+    if not summary.empty:
+        tier_df = summary["현재 통합건강1 P"].apply(lambda x: current_tier_info(x, tiers)).apply(pd.Series)
+        call_list = pd.concat([summary, tier_df], axis=1)
+        call_list["콜멘트"] = call_list.apply(make_call_message, axis=1)
+    else:
+        call_list = summary.copy()
+        for col in [
+            "현재구간", "현재구간명", "다음구간", "다음구간명", "부족P",
+            "현재금시상", "현재금시상명", "다음금시상", "다음금시상명", "추가상승액",
+            "콜우선순위", "콜멘트",
+        ]:
+            call_list[col] = []
 
     priority_order = {"S급": 1, "A급": 2, "B급": 3, "완료": 4}
     call_list["정렬키"] = call_list["콜우선순위"].map(priority_order).fillna(9)
@@ -257,17 +309,15 @@ def analyze_promotion(df: pd.DataFrame, premium_col: str, filter_active: bool = 
         ascending=[True, True, False, False],
     ).drop(columns=["정렬키"]).reset_index(drop=True)
 
-    target_display_cols = [c for c in df.columns if c in [
-        "NO", "대리점명", "지점명", "설계사", "계약번호", "계약일자", "계약상태", "상품명",
+    target_display_cols = [c for c in [
+        "시책유형", "NO", "대리점명", "지점명", "설계사", "계약번호", "계약일자", "계약상태", "상품명",
         "보험료", "계약자명", "피보험자명", "가입금액", "월환산보험료", "연환산보험료", "CMP",
-        "납입기간", "납입주기", "납입상태",
-    ]]
-    for extra in ["보험료_숫자", "인정보험료"]:
-        if extra not in target_display_cols:
-            target_display_cols.append(extra)
-    target = target[target_display_cols].copy()
+        "납입기간", "납입주기", "납입상태", "보험료_숫자", "인정보험료",
+    ] if c in target.columns]
+    target = target[target_display_cols].copy() if not target.empty else pd.DataFrame(columns=target_display_cols)
 
     metrics = {
+        "시책유형": promotion_type,
         "대상계약건수": int(len(target)),
         "대상설계사수": int(call_list["설계사"].nunique()) if "설계사" in call_list.columns else 0,
         "총인정보험료": int(target["인정보험료"].sum()) if "인정보험료" in target.columns else 0,
@@ -278,39 +328,113 @@ def analyze_promotion(df: pd.DataFrame, premium_col: str, filter_active: bool = 
     return call_list, target, metrics
 
 
+def split_by_agency_type(df: pd.DataFrame, agency_type_df: pd.DataFrame, agency_col: str = "대리점명") -> dict[str, pd.DataFrame]:
+    if agency_col not in df.columns:
+        selected_type = agency_type_df.loc[0, "시책유형"] if not agency_type_df.empty else "2형"
+        return {selected_type: df.copy()}
+
+    mapping = dict(zip(agency_type_df[agency_col].astype(str).str.strip(), agency_type_df["시책유형"].astype(str).str.strip()))
+    work = df.copy()
+    work["_대리점정리"] = work[agency_col].fillna("").astype(str).str.strip()
+    work["_시책유형"] = work["_대리점정리"].map(mapping).fillna("2형")
+    return {
+        "1형": work[work["_시책유형"].eq("1형")].drop(columns=["_대리점정리", "_시책유형"]).copy(),
+        "2형": work[work["_시책유형"].eq("2형")].drop(columns=["_대리점정리", "_시책유형"]).copy(),
+    }
+
+
 # -------------------------------
 # 엑셀 생성 로직
 # -------------------------------
 
 def autosize_columns(worksheet, dataframe: pd.DataFrame, start_col: int = 0, max_width: int = 42) -> None:
     for idx, col in enumerate(dataframe.columns):
-        values = dataframe[col].astype(str).replace("nan", "")
-        width = max(len(str(col)), int(values.map(len).quantile(0.95)) if len(values) else 0) + 2
+        if len(dataframe) == 0:
+            width = len(str(col)) + 2
+        else:
+            values = dataframe[col].astype(str).replace("nan", "")
+            width = max(len(str(col)), int(values.map(len).quantile(0.95)) if len(values) else 0) + 2
         worksheet.set_column(start_col + idx, start_col + idx, min(max(width, 10), max_width))
 
 
-def make_excel_file(call_list: pd.DataFrame, target: pd.DataFrame, metrics: dict) -> bytes:
+def tier_table_for_excel() -> pd.DataFrame:
+    rows = []
+    for ptype, config in PROMOTION_CONFIGS.items():
+        for item in config["tiers"]:
+            rows.append({
+                "시책유형": ptype,
+                "구분": config["caption"],
+                "달성구간": item["tier"],
+                "구간명": item["tier_name"],
+                "13회차 금시상/현금": item["prize"],
+                "지급액표시": item["prize_name"],
+                "익월": config["monthly_rate"],
+                "포스터표기": config["max_rate"],
+            })
+    return pd.DataFrame(rows)
+
+
+def safe_sheet_name(name: str) -> str:
+    return name[:31]
+
+
+def write_formatted_table(writer, sheet_name: str, df: pd.DataFrame, workbook, fmt_header, fmt_num, fmt_note) -> None:
+    df.to_excel(writer, sheet_name=safe_sheet_name(sheet_name), index=False, startrow=0)
+    ws = writer.sheets[safe_sheet_name(sheet_name)]
+    ws.freeze_panes(1, 0)
+    if len(df.columns) > 0:
+        ws.autofilter(0, 0, max(len(df), 1), max(len(df.columns) - 1, 0))
+        for col_idx, col_name in enumerate(df.columns):
+            ws.write(0, col_idx, col_name, fmt_header)
+        autosize_columns(ws, df)
+        number_cols = [
+            "대상계약건수", "원보험료합계", "현재 통합건강1 P", "현재구간", "다음구간", "부족P",
+            "현재금시상", "다음금시상", "추가상승액", "보험료", "가입금액", "월환산보험료", "연환산보험료",
+            "CMP", "보험료_숫자", "인정보험료", "달성구간", "13회차 금시상/현금",
+        ]
+        for col_name in number_cols:
+            if col_name in df.columns:
+                idx = df.columns.get_loc(col_name)
+                ws.set_column(idx, idx, 16, fmt_num)
+        if "콜멘트" in df.columns:
+            idx = df.columns.get_loc("콜멘트")
+            ws.set_column(idx, idx, 75, fmt_note)
+        if "콜우선순위" in df.columns and len(df) > 0:
+            priority_col = df.columns.get_loc("콜우선순위")
+            ws.conditional_format(1, priority_col, len(df), priority_col, {
+                "type": "text", "criteria": "containing", "value": "S급",
+                "format": workbook.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006", "bold": True, "border": 1}),
+            })
+            ws.conditional_format(1, priority_col, len(df), priority_col, {
+                "type": "text", "criteria": "containing", "value": "A급",
+                "format": workbook.add_format({"bg_color": "#FFEB9C", "font_color": "#9C6500", "bold": True, "border": 1}),
+            })
+
+
+def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame, premium_col: str) -> bytes:
     output = BytesIO()
 
     call_cols = [
-        "대리점명", "지점명", "설계사", "대상계약건수", "현재 통합건강1 P", "현재구간명",
+        "시책유형", "대리점명", "지점명", "설계사", "대상계약건수", "원보험료합계", "현재 통합건강1 P", "현재구간명",
         "다음구간명", "부족P", "현재금시상", "다음금시상", "추가상승액", "콜우선순위", "콜멘트",
     ]
-    call_export = call_list[[c for c in call_cols if c in call_list.columns]].copy()
 
-    tier_table = pd.DataFrame(TIERS)
-    tier_table = tier_table.rename(columns={
-        "tier": "달성구간",
-        "tier_name": "구간명",
-        "prize": "13회차 금시상/현금",
-        "prize_name": "지급액표시",
-    })
+    dashboard_rows = []
+    for ptype in ["1형", "2형"]:
+        metrics = results.get(ptype, {}).get("metrics", {})
+        dashboard_rows.append({
+            "시책유형": ptype,
+            "대상계약건수": metrics.get("대상계약건수", 0),
+            "대상설계사수": metrics.get("대상설계사수", 0),
+            "총인정보험료": metrics.get("총인정보험료", 0),
+            "S급": metrics.get("S급", 0),
+            "A급": metrics.get("A급", 0),
+            "완료": metrics.get("완료", 0),
+        })
+    dashboard_df = pd.DataFrame(dashboard_rows)
+    tier_table = tier_table_for_excel()
 
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        call_export.to_excel(writer, sheet_name="콜리스트_통합건강1", index=False, startrow=0)
-        target.to_excel(writer, sheet_name="대상계약", index=False, startrow=0)
-        tier_table.to_excel(writer, sheet_name="시책조건", index=False, startrow=3)
-
         workbook = writer.book
         fmt_title = workbook.add_format({"bold": True, "font_size": 18, "font_color": "#FFFFFF", "bg_color": "#17365D", "align": "center", "valign": "vcenter"})
         fmt_subtitle = workbook.add_format({"bold": True, "font_size": 12, "font_color": "#1F2937", "bg_color": "#EAF2F8"})
@@ -324,39 +448,48 @@ def make_excel_file(call_list: pd.DataFrame, target: pd.DataFrame, metrics: dict
         # 대시보드
         dash = workbook.add_worksheet("대시보드")
         writer.sheets["대시보드"] = dash
-        dash.merge_range("A1:F1", "2026년 5월 라이나생명 통합건강1 금시상 콜작업용", fmt_title)
-        dash.merge_range("A2:F2", "새로담는건강보험 / 새로담는간편건강보험 / 새로담는건강보험플러스만 합산", fmt_subtitle)
+        dash.merge_range("A1:H1", "2026년 5월 라이나생명 통합건강1 금시상 콜작업용", fmt_title)
+        dash.merge_range("A2:H2", "로우파일 업로드 후 대리점별 1형/2형을 선택하여 시트별 콜리스트 생성", fmt_subtitle)
         dash.write("A4", "분석 기준", fmt_header)
         dash.write("B4", "내용", fmt_header)
-        dash.write("A5", "대상 상품군", fmt_body)
-        dash.write("B5", "새로담는건강보험 / 새로담는간편건강보험 / 새로담는건강보험플러스", fmt_body)
-        dash.write("A6", "적용 시책", fmt_body)
-        dash.write("B6", "통합건강1 13회차 금시상 구간만 반영", fmt_body)
-        dash.write("A7", "인정 기준", fmt_body)
-        dash.write("B7", "계약상태=유지, 납입상태=정상, 건당 30만원 한도", fmt_body)
-        dash.write("A8", "콜 등급", fmt_body)
-        dash.write("B8", "S급: 부족P 2만원 이하 / A급: 5만원 이하 / B급: 그 외 / 완료: 50만원 이상", fmt_body)
-
-        dash.write("D4", "핵심 KPI", fmt_header)
-        dash.write("E4", "값", fmt_header)
-        kpis = [
-            ("대상 계약 건수", metrics.get("대상계약건수", 0)),
-            ("대상 설계사 수", metrics.get("대상설계사수", 0)),
-            ("총 인정 보험료", metrics.get("총인정보험료", 0)),
-            ("S급 콜 대상", metrics.get("S급", 0)),
-            ("A급 콜 대상", metrics.get("A급", 0)),
-            ("완료자", metrics.get("완료", 0)),
+        base_rules = [
+            ("대상 상품군", "새로담는건강보험 / 새로담는간편건강보험 / 새로담는건강보험플러스"),
+            ("적용 시책", "통합건강1 13회차 금시상 구간만 반영"),
+            ("보험료 기준 컬럼", premium_col),
+            ("인정 기준", "계약상태=유지, 납입상태=정상, 건당 30만원 한도"),
+            ("콜 등급", "S급: 부족P 2만원 이하 / A급: 5만원 이하 / B급: 그 외 / 완료: 50만원 이상"),
         ]
-        for r, (label, value) in enumerate(kpis, start=5):
-            dash.write(r - 1, 3, label, fmt_metric_label)
-            dash.write(r - 1, 4, value, fmt_metric_value)
+        for idx, (label, value) in enumerate(base_rules, start=5):
+            dash.write(idx - 1, 0, label, fmt_body)
+            dash.write(idx - 1, 1, value, fmt_body)
 
-        dash.write("A11", "우선 콜 TOP 10", fmt_header)
-        top_cols = ["콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명"]
-        top = call_list[call_list["콜우선순위"].isin(["S급", "A급"])].head(10)
-        if top.empty:
-            top = call_list.head(10)
+        dash.write("D4", "시책유형", fmt_header)
+        dash.write("E4", "대상계약", fmt_header)
+        dash.write("F4", "설계사", fmt_header)
+        dash.write("G4", "총 인정P", fmt_header)
+        dash.write("H4", "S/A급", fmt_header)
+        for row_idx, row in enumerate(dashboard_df.itertuples(index=False), start=5):
+            dash.write(row_idx - 1, 3, row.시책유형, fmt_metric_label)
+            dash.write(row_idx - 1, 4, row.대상계약건수, fmt_metric_value)
+            dash.write(row_idx - 1, 5, row.대상설계사수, fmt_metric_value)
+            dash.write(row_idx - 1, 6, row.총인정보험료, fmt_metric_value)
+            dash.write(row_idx - 1, 7, f"S {row.S급:,} / A {row.A급:,}", fmt_body)
+
+        all_calls = []
+        for ptype in ["1형", "2형"]:
+            call_list = results.get(ptype, {}).get("call_list", pd.DataFrame())
+            if not call_list.empty:
+                all_calls.append(call_list)
+        if all_calls:
+            combined = pd.concat(all_calls, ignore_index=True)
+            top = combined[combined["콜우선순위"].isin(["S급", "A급"])].head(15)
+            if top.empty:
+                top = combined.head(15)
+        else:
+            top = pd.DataFrame(columns=["시책유형", "콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명"])
+        top_cols = ["시책유형", "콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명"]
         top = top[[c for c in top_cols if c in top.columns]].copy()
+        dash.write("A11", "우선 콜 TOP", fmt_header)
         start_row = 11
         for col_num, col_name in enumerate(top.columns):
             dash.write(start_row, col_num, col_name, fmt_header)
@@ -368,61 +501,27 @@ def make_excel_file(call_list: pd.DataFrame, target: pd.DataFrame, metrics: dict
                     dash.write(row_num, col_num, value, fmt_body)
         dash.set_column("A:A", 16)
         dash.set_column("B:C", 18)
-        dash.set_column("D:E", 18)
-        dash.set_column("F:F", 16)
-        dash.set_column("G:G", 18)
+        dash.set_column("D:H", 16)
         dash.set_row(0, 28)
 
-        # 콜리스트 서식
-        ws_call = writer.sheets["콜리스트_통합건강1"]
-        ws_call.freeze_panes(1, 0)
-        ws_call.autofilter(0, 0, max(len(call_export), 1), max(len(call_export.columns) - 1, 0))
-        for col_idx, _ in enumerate(call_export.columns):
-            ws_call.write(0, col_idx, call_export.columns[col_idx], fmt_header)
-        autosize_columns(ws_call, call_export)
-        number_cols = ["대상계약건수", "현재 통합건강1 P", "부족P", "현재금시상", "다음금시상", "추가상승액"]
-        for col_name in number_cols:
-            if col_name in call_export.columns:
-                idx = call_export.columns.get_loc(col_name)
-                ws_call.set_column(idx, idx, 15, fmt_num)
-        if "콜멘트" in call_export.columns:
-            idx = call_export.columns.get_loc("콜멘트")
-            ws_call.set_column(idx, idx, 70, fmt_note)
-        if "콜우선순위" in call_export.columns and len(call_export) > 0:
-            priority_col = call_export.columns.get_loc("콜우선순위")
-            ws_call.conditional_format(1, priority_col, len(call_export), priority_col, {
-                "type": "text", "criteria": "containing", "value": "S급", "format": workbook.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006", "bold": True, "border": 1})
-            })
-            ws_call.conditional_format(1, priority_col, len(call_export), priority_col, {
-                "type": "text", "criteria": "containing", "value": "A급", "format": workbook.add_format({"bg_color": "#FFEB9C", "font_color": "#9C6500", "bold": True, "border": 1})
-            })
+        # 대리점 분류표
+        agency_export = agency_type_df.copy()
+        write_formatted_table(writer, "대리점_분류표", agency_export, workbook, fmt_header, fmt_num, fmt_note)
 
-        # 대상계약 서식
-        ws_target = writer.sheets["대상계약"]
-        ws_target.freeze_panes(1, 0)
-        ws_target.autofilter(0, 0, max(len(target), 1), max(len(target.columns) - 1, 0))
-        for col_idx, _ in enumerate(target.columns):
-            ws_target.write(0, col_idx, target.columns[col_idx], fmt_header)
-        autosize_columns(ws_target, target)
-        for col_name in ["보험료", "가입금액", "월환산보험료", "연환산보험료", "CMP", "보험료_숫자", "인정보험료"]:
-            if col_name in target.columns:
-                idx = target.columns.get_loc(col_name)
-                ws_target.set_column(idx, idx, 14, fmt_num)
+        # 1형/2형 결과 시트
+        for ptype in ["1형", "2형"]:
+            call_list = results.get(ptype, {}).get("call_list", pd.DataFrame())
+            target = results.get(ptype, {}).get("target", pd.DataFrame())
+            call_export = call_list[[c for c in call_cols if c in call_list.columns]].copy() if not call_list.empty else pd.DataFrame(columns=call_cols)
+            write_formatted_table(writer, f"{ptype}_콜리스트", call_export, workbook, fmt_header, fmt_num, fmt_note)
+            write_formatted_table(writer, f"{ptype}_대상계약", target, workbook, fmt_header, fmt_num, fmt_note)
 
-        # 시책조건 서식
+        # 시책조건
+        write_formatted_table(writer, "시책조건", tier_table, workbook, fmt_header, fmt_num, fmt_note)
         ws_tier = writer.sheets["시책조건"]
-        ws_tier.merge_range("A1:E1", "통합건강1 금시상 구간표", fmt_title)
-        ws_tier.write("A2", "적용대상", fmt_header)
-        ws_tier.write("B2", "새로담는건강보험 / 새로담는간편건강보험 / 새로담는건강보험플러스", fmt_body)
-        ws_tier.write("A3", "기준", fmt_header)
-        ws_tier.write("B3", "대상상품 합산 인정보험료 기준, 건강보험 건당 30만원 한도 반영", fmt_body)
-        for col_idx, col_name in enumerate(tier_table.columns):
-            ws_tier.write(3, col_idx, col_name, fmt_header)
-        autosize_columns(ws_tier, tier_table)
-        for col_name in ["달성구간", "13회차 금시상/현금"]:
-            if col_name in tier_table.columns:
-                idx = tier_table.columns.get_loc(col_name)
-                ws_tier.set_column(idx, idx, 18, fmt_num)
+        ws_tier.write("J1", "참고", fmt_header)
+        ws_tier.write("J2", "1형/2형 모두 통합건강1 금시상만 반영. 전략특약/연속가동/익월시책은 현재 버전 제외.", fmt_body)
+        ws_tier.set_column("J:J", 80)
 
     output.seek(0)
     return output.getvalue()
@@ -437,15 +536,16 @@ def main() -> None:
     gate_with_password()
 
     st.title(APP_TITLE)
-    st.caption("엑셀 로우파일을 업로드하면 통합건강1 금시상 기준 콜리스트 엑셀을 자동으로 생성합니다.")
+    st.caption("엑셀 로우파일을 업로드하면 대리점별 1형/2형을 선택하고 통합건강1 금시상 콜리스트를 자동 생성합니다.")
 
     with st.expander("현재 반영된 기준", expanded=True):
         st.markdown(
             """
             - 대상상품: **새로담는건강보험 / 새로담는간편건강보험 / 새로담는건강보험플러스**
-            - 반영시책: **통합건강1 13회차 금시상 구간**
+            - 반영시책: **통합건강1 13회차 금시상 구간만 반영**
+            - 1형 금시상: **5만 50만원 / 10만 100만원 / 20만 200만원 / 30만 300만원 / 50만 500만원**
+            - 2형 금시상: **5만 60만원 / 10만 140만원 / 20만 320만원 / 30만 540만원 / 50만 1,000만원**
             - 인정기준: **계약상태=유지, 납입상태=정상, 건당 30만원 한도**
-            - 구간: 5만원 / 10만원 / 20만원 / 30만원 / 50만원
             - 우선순위: S급 2만원 이하, A급 5만원 이하, B급 그 외
             """
         )
@@ -481,35 +581,103 @@ def main() -> None:
     with col_b:
         filter_normal_payment = st.checkbox("납입상태=정상만 반영", value=True)
 
+    st.divider()
+    st.subheader("대리점별 시책유형 선택")
+
+    agencies = get_agencies(df, "대리점명")
+    if agencies:
+        default_agency_type_df = pd.DataFrame({"대리점명": agencies, "시책유형": ["2형"] * len(agencies)})
+        st.caption("기본값은 2형입니다. 1형 대리점만 1형으로 바꿔주세요.")
+        agency_type_df = st.data_editor(
+            default_agency_type_df,
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            column_config={
+                "대리점명": st.column_config.TextColumn("대리점명", disabled=True),
+                "시책유형": st.column_config.SelectboxColumn("시책유형", options=["1형", "2형"], required=True),
+            },
+            key="agency_type_editor",
+        )
+    else:
+        selected_type = st.radio("대리점명 컬럼이 없어 전체 파일에 적용할 시책유형을 선택하세요.", ["1형", "2형"], horizontal=True, index=1)
+        agency_type_df = pd.DataFrame({"대리점명": ["전체"], "시책유형": [selected_type]})
+
+    output_mode = st.radio(
+        "결과 생성 방식",
+        ["1형+2형 전체 생성", "1형만 생성", "2형만 생성"],
+        horizontal=True,
+        index=0,
+    )
+
     if st.button("콜리스트 생성하기", type="primary", use_container_width=True):
         try:
-            call_list, target, metrics = analyze_promotion(df, premium_col=premium_col, filter_active=filter_active, filter_normal_payment=filter_normal_payment)
-            excel_bytes = make_excel_file(call_list, target, metrics)
+            split_data = split_by_agency_type(df, agency_type_df, "대리점명")
+            run_types = ["1형", "2형"]
+            if output_mode == "1형만 생성":
+                run_types = ["1형"]
+            elif output_mode == "2형만 생성":
+                run_types = ["2형"]
+
+            results = {}
+            for ptype in run_types:
+                part_df = split_data.get(ptype, pd.DataFrame(columns=df.columns))
+                call_list, target, metrics = analyze_promotion(
+                    part_df,
+                    premium_col=premium_col,
+                    promotion_type=ptype,
+                    filter_active=filter_active,
+                    filter_normal_payment=filter_normal_payment,
+                )
+                results[ptype] = {"call_list": call_list, "target": target, "metrics": metrics}
+
+            # 생성하지 않은 유형도 빈 시트/대시보드가 안정적으로 생기도록 빈 결과를 넣습니다.
+            for ptype in ["1형", "2형"]:
+                if ptype not in results:
+                    empty_call, empty_target, empty_metrics = analyze_promotion(
+                        pd.DataFrame(columns=df.columns),
+                        premium_col=premium_col,
+                        promotion_type=ptype,
+                        filter_active=filter_active,
+                        filter_normal_payment=filter_normal_payment,
+                    )
+                    results[ptype] = {"call_list": empty_call, "target": empty_target, "metrics": empty_metrics}
+
+            excel_bytes = make_excel_file_multi(results, agency_type_df, premium_col)
         except Exception as exc:
             st.error(f"분석 중 오류가 발생했습니다: {exc}")
             return
 
         st.success("콜리스트 생성이 완료되었습니다.")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("대상 계약", f"{metrics['대상계약건수']:,}건")
-        col2.metric("대상 설계사", f"{metrics['대상설계사수']:,}명")
-        col3.metric("총 인정P", money(metrics["총인정보험료"]))
-        col4.metric("S급", f"{metrics['S급']:,}명")
-        col5.metric("A급", f"{metrics['A급']:,}명")
+        m1 = results["1형"]["metrics"]
+        m2 = results["2형"]["metrics"]
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
+        col1.metric("1형 대상계약", f"{m1['대상계약건수']:,}건")
+        col2.metric("1형 S/A급", f"S {m1['S급']:,} / A {m1['A급']:,}")
+        col3.metric("1형 총 인정P", money(m1["총인정보험료"]))
+        col4.metric("2형 대상계약", f"{m2['대상계약건수']:,}건")
+        col5.metric("2형 S/A급", f"S {m2['S급']:,} / A {m2['A급']:,}")
+        col6.metric("2형 총 인정P", money(m2["총인정보험료"]))
 
-        st.subheader("콜리스트 미리보기")
-        st.dataframe(call_list, use_container_width=True, hide_index=True)
+        tab1, tab2, tab3 = st.tabs(["1형 콜리스트", "2형 콜리스트", "대리점 분류표"])
+        with tab1:
+            st.dataframe(results["1형"]["call_list"], use_container_width=True, hide_index=True)
+        with tab2:
+            st.dataframe(results["2형"]["call_list"], use_container_width=True, hide_index=True)
+        with tab3:
+            st.dataframe(agency_type_df, use_container_width=True, hide_index=True)
 
         st.download_button(
             label="결과 엑셀 다운로드",
             data=excel_bytes,
-            file_name="라이나_통합건강1_금시상_콜리스트.xlsx",
+            file_name="라이나_통합건강1_금시상_1형2형_콜리스트.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
 
         with st.expander("대상계약 미리보기"):
-            st.dataframe(target, use_container_width=True, hide_index=True)
+            preview_target = pd.concat([results["1형"]["target"], results["2형"]["target"]], ignore_index=True)
+            st.dataframe(preview_target, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
