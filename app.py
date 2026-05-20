@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 
-APP_TITLE = "라이나 통합건강1 금시상 콜리스트 자동생성기"
+APP_TITLE = "라이나 금시상 콜리스트 자동생성_엄성훈"
 
 TARGET_PRODUCT_KEYWORDS = [
     "새로담는건강보험",
