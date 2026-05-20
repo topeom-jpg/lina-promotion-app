@@ -586,19 +586,46 @@ def main() -> None:
 
     agencies = get_agencies(df, "대리점명")
     if agencies:
-        default_agency_type_df = pd.DataFrame({"대리점명": agencies, "시책유형": ["2형"] * len(agencies)})
-        st.caption("기본값은 2형입니다. 1형 대리점만 1형으로 바꿔주세요.")
-        agency_type_df = st.data_editor(
-            default_agency_type_df,
+        st.caption("기본값은 전체 2형입니다. 1형 대리점만 체크해주세요. 체크하지 않은 대리점은 자동으로 2형 처리됩니다.")
+
+        default_agency_check_df = pd.DataFrame({
+            "1형 선택": [False] * len(agencies),
+            "대리점명": agencies,
+        })
+
+        edited_agency_df = st.data_editor(
+            default_agency_check_df,
             hide_index=True,
             use_container_width=True,
             num_rows="fixed",
             column_config={
+                "1형 선택": st.column_config.CheckboxColumn("1형 선택", help="1형 대리점이면 체크", default=False),
                 "대리점명": st.column_config.TextColumn("대리점명", disabled=True),
-                "시책유형": st.column_config.SelectboxColumn("시책유형", options=["1형", "2형"], required=True),
             },
-            key="agency_type_editor",
+            key="agency_type_checkbox_editor",
         )
+
+        edited_agency_df["1형 선택"] = edited_agency_df["1형 선택"].fillna(False).astype(bool)
+        agency_type_df = edited_agency_df[["대리점명", "1형 선택"]].copy()
+        agency_type_df["시책유형"] = agency_type_df["1형 선택"].map(lambda checked: "1형" if checked else "2형")
+        agency_type_df = agency_type_df[["대리점명", "시책유형"]]
+
+        type1_agencies = agency_type_df.loc[agency_type_df["시책유형"].eq("1형"), "대리점명"].tolist()
+        type2_agencies = agency_type_df.loc[agency_type_df["시책유형"].eq("2형"), "대리점명"].tolist()
+
+        col_type1, col_type2 = st.columns(2)
+        with col_type1:
+            st.markdown("**1형 선택 대리점**")
+            if type1_agencies:
+                st.write(", ".join(type1_agencies))
+            else:
+                st.info("아직 1형으로 선택한 대리점이 없습니다.")
+        with col_type2:
+            st.markdown("**2형 자동 처리 대리점**")
+            if type2_agencies:
+                st.write(", ".join(type2_agencies))
+            else:
+                st.info("모든 대리점이 1형으로 선택되었습니다.")
     else:
         selected_type = st.radio("대리점명 컬럼이 없어 전체 파일에 적용할 시책유형을 선택하세요.", ["1형", "2형"], horizontal=True, index=1)
         agency_type_df = pd.DataFrame({"대리점명": ["전체"], "시책유형": [selected_type]})
