@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 
-APP_TITLE = "라이나 금시상 콜리스트 자동생성v2/26/05/27_엄성훈"
+APP_TITLE = "라이나 금시상 콜리스트 자동생성_엄성훈 v2"
 
 TARGET_PRODUCT_KEYWORDS = [
     "새로담는건강보험",
@@ -196,13 +196,32 @@ def current_tier_info(total_p: float, tiers: list[dict]) -> dict:
     }
 
 
+def make_subscription_note(row: pd.Series) -> str:
+    try:
+        subscription_count = int(row.get("청약계약건수", 0) or 0)
+        subscription_p = int(row.get("청약인정보험료", 0) or 0)
+    except Exception:
+        subscription_count = 0
+        subscription_p = 0
+
+    if subscription_count <= 0 or subscription_p <= 0:
+        return ""
+
+    return (
+        f"청약상태 계약 {subscription_count:,}건 / 인정P {subscription_p:,}원이 포함되어 있습니다. "
+        "철회·거절 시 현재구간, 부족P, 금시상 대상 여부가 변동될 수 있으니 반드시 확인하세요."
+    )
+
+
 def make_call_message(row: pd.Series) -> str:
     promotion_type = row.get("시책유형", "")
     current_p = int(row["현재 통합건강1 P"])
     priority = row["콜우선순위"]
+    subscription_note = str(row.get("청약확인멘트", "") or "")
+    note_suffix = f" ※ {subscription_note}" if subscription_note else ""
 
     if priority == "완료":
-        return f"[{promotion_type}] 현재 통합건강1 인정P {current_p:,}원으로 50만원 최고구간 달성입니다. 유지/철회 방어 체크가 우선입니다."
+        return f"[{promotion_type}] 현재 통합건강1 인정P {current_p:,}원으로 50만원 최고구간 달성입니다. 유지/철회 방어 체크가 우선입니다.{note_suffix}"
 
     shortage = int(row["부족P"])
     next_tier_name = row["다음구간명"]
@@ -210,14 +229,14 @@ def make_call_message(row: pd.Series) -> str:
     increase = int(row["추가상승액"])
 
     if current_p == 0:
-        return f"[{promotion_type}] 통합건강1 가동이 없습니다. {shortage:,}원 설계 시 {next_tier_name} 구간 진입, 13회차 금시상 {next_prize} 대상입니다."
+        return f"[{promotion_type}] 통합건강1 가동이 없습니다. {shortage:,}원 설계 시 {next_tier_name} 구간 진입, 13회차 금시상 {next_prize} 대상입니다.{note_suffix}"
 
     return (
         f"[{promotion_type}] 현재 통합건강1 인정P {current_p:,}원입니다. "
         f"{shortage:,}원만 추가하면 {next_tier_name} 구간 진입, "
         f"13회차 금시상 {next_prize} 대상입니다. 현재 대비 추가상승액은 {increase:,}원입니다."
+        f"{note_suffix}"
     )
-
 
 def get_agencies(df: pd.DataFrame, agency_col: str = "대리점명") -> list[str]:
     if agency_col not in df.columns:
@@ -274,31 +293,39 @@ def analyze_promotion(
 
     target = work[work["대상상품여부"] & status_mask & payment_mask].copy()
     target["인정보험료"] = target["보험료_숫자"].clip(upper=300_000)
+    target["청약여부"] = target["계약상태"].eq("청약")
+    target["청약보험료"] = target["보험료_숫자"].where(target["청약여부"], 0)
+    target["청약인정보험료"] = target["인정보험료"].where(target["청약여부"], 0)
+    target["청약확인대상"] = target["청약여부"].map(lambda x: "확인필요" if x else "")
 
     grouping_cols = ["시책유형", "대리점명", "지점명", "설계사"]
     summary = (
         target.groupby(grouping_cols, dropna=False)
         .agg(
             대상계약건수=("설계사", "size"),
+            청약계약건수=("청약여부", "sum"),
             원보험료합계=("보험료_숫자", "sum"),
+            청약보험료합계=("청약보험료", "sum"),
             **{"현재 통합건강1 P": ("인정보험료", "sum")},
+            청약인정보험료=("청약인정보험료", "sum"),
         )
         .reset_index()
     )
 
     if summary.empty:
-        summary = pd.DataFrame(columns=grouping_cols + ["대상계약건수", "원보험료합계", "현재 통합건강1 P"])
+        summary = pd.DataFrame(columns=grouping_cols + ["대상계약건수", "청약계약건수", "원보험료합계", "청약보험료합계", "현재 통합건강1 P", "청약인정보험료"])
 
     if not summary.empty:
         tier_df = summary["현재 통합건강1 P"].apply(lambda x: current_tier_info(x, tiers)).apply(pd.Series)
         call_list = pd.concat([summary, tier_df], axis=1)
+        call_list["청약확인멘트"] = call_list.apply(make_subscription_note, axis=1)
         call_list["콜멘트"] = call_list.apply(make_call_message, axis=1)
     else:
         call_list = summary.copy()
         for col in [
             "현재구간", "현재구간명", "다음구간", "다음구간명", "부족P",
             "현재금시상", "현재금시상명", "다음금시상", "다음금시상명", "추가상승액",
-            "콜우선순위", "콜멘트",
+            "콜우선순위", "청약확인멘트", "콜멘트",
         ]:
             call_list[col] = []
 
@@ -312,7 +339,7 @@ def analyze_promotion(
     target_display_cols = [c for c in [
         "시책유형", "NO", "대리점명", "지점명", "설계사", "계약번호", "계약일자", "계약상태", "상품명",
         "보험료", "계약자명", "피보험자명", "가입금액", "월환산보험료", "연환산보험료", "CMP",
-        "납입기간", "납입주기", "납입상태", "보험료_숫자", "인정보험료",
+        "납입기간", "납입주기", "납입상태", "청약확인대상", "보험료_숫자", "인정보험료", "청약인정보험료",
     ] if c in target.columns]
     target = target[target_display_cols].copy() if not target.empty else pd.DataFrame(columns=target_display_cols)
 
@@ -321,6 +348,9 @@ def analyze_promotion(
         "대상계약건수": int(len(target)),
         "대상설계사수": int(call_list["설계사"].nunique()) if "설계사" in call_list.columns else 0,
         "총인정보험료": int(target["인정보험료"].sum()) if "인정보험료" in target.columns else 0,
+        "청약계약건수": int(target["청약여부"].sum()) if "청약여부" in target.columns else 0,
+        "청약원보험료": int(target["청약보험료"].sum()) if "청약보험료" in target.columns else 0,
+        "청약인정보험료": int(target["청약인정보험료"].sum()) if "청약인정보험료" in target.columns else 0,
         "S급": int((call_list["콜우선순위"] == "S급").sum()) if "콜우선순위" in call_list.columns else 0,
         "A급": int((call_list["콜우선순위"] == "A급").sum()) if "콜우선순위" in call_list.columns else 0,
         "완료": int((call_list["콜우선순위"] == "완료").sum()) if "콜우선순위" in call_list.columns else 0,
@@ -378,6 +408,16 @@ def safe_sheet_name(name: str) -> str:
     return name[:31]
 
 
+def call_list_export_view(call_list: pd.DataFrame) -> pd.DataFrame:
+    """사용자에게 보여줄 콜리스트는 청약 관련 상세 숫자 컬럼을 빼고 청약확인멘트만 남깁니다."""
+    call_cols = [
+        "시책유형", "대리점명", "지점명", "설계사", "대상계약건수",
+        "원보험료합계", "현재 통합건강1 P", "현재구간명",
+        "다음구간명", "부족P", "현재금시상", "다음금시상", "추가상승액", "콜우선순위", "청약확인멘트", "콜멘트",
+    ]
+    return call_list[[c for c in call_cols if c in call_list.columns]].copy() if not call_list.empty else pd.DataFrame(columns=call_cols)
+
+
 def write_formatted_table(writer, sheet_name: str, df: pd.DataFrame, workbook, fmt_header, fmt_num, fmt_note) -> None:
     df.to_excel(writer, sheet_name=safe_sheet_name(sheet_name), index=False, startrow=0)
     ws = writer.sheets[safe_sheet_name(sheet_name)]
@@ -388,14 +428,23 @@ def write_formatted_table(writer, sheet_name: str, df: pd.DataFrame, workbook, f
             ws.write(0, col_idx, col_name, fmt_header)
         autosize_columns(ws, df)
         number_cols = [
-            "대상계약건수", "원보험료합계", "현재 통합건강1 P", "현재구간", "다음구간", "부족P",
-            "현재금시상", "다음금시상", "추가상승액", "보험료", "가입금액", "월환산보험료", "연환산보험료",
-            "CMP", "보험료_숫자", "인정보험료", "달성구간", "13회차 금시상/현금",
+            "대상계약건수", "청약계약건수", "원보험료합계", "청약보험료합계", "현재 통합건강1 P", "청약인정보험료",
+            "현재구간", "다음구간", "부족P", "현재금시상", "다음금시상", "추가상승액",
+            "보험료", "가입금액", "월환산보험료", "연환산보험료", "CMP", "보험료_숫자", "인정보험료",
+            "달성구간", "13회차 금시상/현금",
         ]
         for col_name in number_cols:
             if col_name in df.columns:
                 idx = df.columns.get_loc(col_name)
                 ws.set_column(idx, idx, 16, fmt_num)
+        if "청약확인멘트" in df.columns:
+            idx = df.columns.get_loc("청약확인멘트")
+            ws.set_column(idx, idx, 70, fmt_note)
+            if len(df) > 0:
+                ws.conditional_format(1, idx, len(df), idx, {
+                    "type": "text", "criteria": "containing", "value": "청약상태",
+                    "format": workbook.add_format({"bg_color": "#FFF200", "font_color": "#7F6000", "bold": True, "border": 1, "text_wrap": True}),
+                })
         if "콜멘트" in df.columns:
             idx = df.columns.get_loc("콜멘트")
             ws.set_column(idx, idx, 75, fmt_note)
@@ -415,8 +464,9 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
     output = BytesIO()
 
     call_cols = [
-        "시책유형", "대리점명", "지점명", "설계사", "대상계약건수", "원보험료합계", "현재 통합건강1 P", "현재구간명",
-        "다음구간명", "부족P", "현재금시상", "다음금시상", "추가상승액", "콜우선순위", "콜멘트",
+        "시책유형", "대리점명", "지점명", "설계사", "대상계약건수",
+        "원보험료합계", "현재 통합건강1 P", "현재구간명",
+        "다음구간명", "부족P", "현재금시상", "다음금시상", "추가상승액", "콜우선순위", "청약확인멘트", "콜멘트",
     ]
 
     dashboard_rows = []
@@ -427,6 +477,8 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
             "대상계약건수": metrics.get("대상계약건수", 0),
             "대상설계사수": metrics.get("대상설계사수", 0),
             "총인정보험료": metrics.get("총인정보험료", 0),
+            "청약계약건수": metrics.get("청약계약건수", 0),
+            "청약인정보험료": metrics.get("청약인정보험료", 0),
             "S급": metrics.get("S급", 0),
             "A급": metrics.get("A급", 0),
             "완료": metrics.get("완료", 0),
@@ -457,6 +509,7 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
             ("적용 시책", "통합건강1 13회차 금시상 구간만 반영"),
             ("보험료 기준 컬럼", premium_col),
             ("인정 기준", "계약상태=유지 또는 청약, 납입상태=정상, 건당 30만원 한도"),
+            ("청약 포함 주의", "청약상태 계약이 포함된 설계사는 청약확인멘트에 표시됩니다. 철회·거절 시 구간 변동 여부를 확인하세요."),
             ("콜 등급", "S급: 부족P 2만원 이하 / A급: 5만원 이하 / B급: 그 외 / 완료: 50만원 이상"),
         ]
         for idx, (label, value) in enumerate(base_rules, start=5):
@@ -467,13 +520,17 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
         dash.write("E4", "대상계약", fmt_header)
         dash.write("F4", "설계사", fmt_header)
         dash.write("G4", "총 인정P", fmt_header)
-        dash.write("H4", "S/A급", fmt_header)
+        dash.write("H4", "청약건수", fmt_header)
+        dash.write("I4", "청약 인정P", fmt_header)
+        dash.write("J4", "S/A급", fmt_header)
         for row_idx, row in enumerate(dashboard_df.itertuples(index=False), start=5):
             dash.write(row_idx - 1, 3, row.시책유형, fmt_metric_label)
             dash.write(row_idx - 1, 4, row.대상계약건수, fmt_metric_value)
             dash.write(row_idx - 1, 5, row.대상설계사수, fmt_metric_value)
             dash.write(row_idx - 1, 6, row.총인정보험료, fmt_metric_value)
-            dash.write(row_idx - 1, 7, f"S {row.S급:,} / A {row.A급:,}", fmt_body)
+            dash.write(row_idx - 1, 7, row.청약계약건수, fmt_metric_value)
+            dash.write(row_idx - 1, 8, row.청약인정보험료, fmt_metric_value)
+            dash.write(row_idx - 1, 9, f"S {row.S급:,} / A {row.A급:,}", fmt_body)
 
         all_calls = []
         for ptype in ["1형", "2형"]:
@@ -486,8 +543,8 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
             if top.empty:
                 top = combined.head(15)
         else:
-            top = pd.DataFrame(columns=["시책유형", "콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명"])
-        top_cols = ["시책유형", "콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명"]
+            top = pd.DataFrame(columns=["시책유형", "콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명", "청약확인멘트"])
+        top_cols = ["시책유형", "콜우선순위", "대리점명", "지점명", "설계사", "현재 통합건강1 P", "부족P", "다음구간명", "다음금시상명", "청약확인멘트"]
         top = top[[c for c in top_cols if c in top.columns]].copy()
         dash.write("A11", "우선 콜 TOP", fmt_header)
         start_row = 11
@@ -501,7 +558,7 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
                     dash.write(row_num, col_num, value, fmt_body)
         dash.set_column("A:A", 16)
         dash.set_column("B:C", 18)
-        dash.set_column("D:H", 16)
+        dash.set_column("D:J", 16)
         dash.set_row(0, 28)
 
         # 대리점 분류표
@@ -512,7 +569,7 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
         for ptype in ["1형", "2형"]:
             call_list = results.get(ptype, {}).get("call_list", pd.DataFrame())
             target = results.get(ptype, {}).get("target", pd.DataFrame())
-            call_export = call_list[[c for c in call_cols if c in call_list.columns]].copy() if not call_list.empty else pd.DataFrame(columns=call_cols)
+            call_export = call_list_export_view(call_list)
             write_formatted_table(writer, f"{ptype}_콜리스트", call_export, workbook, fmt_header, fmt_num, fmt_note)
             write_formatted_table(writer, f"{ptype}_대상계약", target, workbook, fmt_header, fmt_num, fmt_note)
 
@@ -546,6 +603,7 @@ def main() -> None:
             - 1형 금시상: **5만 50만원 / 10만 100만원 / 20만 200만원 / 30만 300만원 / 50만 500만원**
             - 2형 금시상: **5만 60만원 / 10만 140만원 / 20만 320만원 / 30만 540만원 / 50만 1,000만원**
             - 인정기준: **계약상태=유지 또는 청약, 납입상태=정상, 건당 30만원 한도**
+            - 청약주의: **청약상태 계약은 합산하되, 결과 엑셀 콜리스트에는 청약확인멘트만 표시**
             - 우선순위: S급 2만원 이하, A급 5만원 이하, B급 그 외
             """
         )
@@ -686,11 +744,19 @@ def main() -> None:
         col5.metric("2형 S/A급", f"S {m2['S급']:,} / A {m2['A급']:,}")
         col6.metric("2형 총 인정P", money(m2["총인정보험료"]))
 
+        total_subscription_count = int(m1.get("청약계약건수", 0)) + int(m2.get("청약계약건수", 0))
+        total_subscription_p = int(m1.get("청약인정보험료", 0)) + int(m2.get("청약인정보험료", 0))
+        if total_subscription_count > 0:
+            st.warning(
+                f"청약상태 계약 {total_subscription_count:,}건 / 인정P {total_subscription_p:,}원이 합산되었습니다. "
+                "철회·거절 시 구간과 금시상 대상 여부가 달라질 수 있으니 결과 엑셀의 청약확인멘트를 확인하세요."
+            )
+
         tab1, tab2, tab3 = st.tabs(["1형 콜리스트", "2형 콜리스트", "대리점 분류표"])
         with tab1:
-            st.dataframe(results["1형"]["call_list"], use_container_width=True, hide_index=True)
+            st.dataframe(call_list_export_view(results["1형"]["call_list"]), use_container_width=True, hide_index=True)
         with tab2:
-            st.dataframe(results["2형"]["call_list"], use_container_width=True, hide_index=True)
+            st.dataframe(call_list_export_view(results["2형"]["call_list"]), use_container_width=True, hide_index=True)
         with tab3:
             st.dataframe(agency_type_df, use_container_width=True, hide_index=True)
 
