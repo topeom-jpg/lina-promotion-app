@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 
-APP_TITLE = "라이나 금시상 콜리스트 자동생성_엄성훈"
+APP_TITLE = "라이나 금시상 콜리스트 자동생성v2/26/05/27_엄성훈"
 
 TARGET_PRODUCT_KEYWORDS = [
     "새로담는건강보험",
@@ -240,7 +240,7 @@ def analyze_promotion(
     df: pd.DataFrame,
     premium_col: str,
     promotion_type: str,
-    filter_active: bool = True,
+    filter_valid_status: bool = True,
     filter_normal_payment: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     work = df.copy()
@@ -266,8 +266,8 @@ def analyze_promotion(
         work["납입상태"] = work["납입상태"].fillna("").astype(str).str.strip()
 
     status_mask = True
-    if filter_active and "계약상태" in work.columns:
-        status_mask = work["계약상태"].eq("유지")
+    if filter_valid_status and "계약상태" in work.columns:
+        status_mask = work["계약상태"].isin(["유지", "청약"])
     payment_mask = True
     if filter_normal_payment and "납입상태" in work.columns:
         payment_mask = work["납입상태"].eq("정상")
@@ -456,7 +456,7 @@ def make_excel_file_multi(results: dict[str, dict], agency_type_df: pd.DataFrame
             ("대상 상품군", "새로담는건강보험 / 새로담는간편건강보험 / 새로담는건강보험플러스"),
             ("적용 시책", "통합건강1 13회차 금시상 구간만 반영"),
             ("보험료 기준 컬럼", premium_col),
-            ("인정 기준", "계약상태=유지, 납입상태=정상, 건당 30만원 한도"),
+            ("인정 기준", "계약상태=유지 또는 청약, 납입상태=정상, 건당 30만원 한도"),
             ("콜 등급", "S급: 부족P 2만원 이하 / A급: 5만원 이하 / B급: 그 외 / 완료: 50만원 이상"),
         ]
         for idx, (label, value) in enumerate(base_rules, start=5):
@@ -545,7 +545,7 @@ def main() -> None:
             - 반영시책: **통합건강1 13회차 금시상 구간만 반영**
             - 1형 금시상: **5만 50만원 / 10만 100만원 / 20만 200만원 / 30만 300만원 / 50만 500만원**
             - 2형 금시상: **5만 60만원 / 10만 140만원 / 20만 320만원 / 30만 540만원 / 50만 1,000만원**
-            - 인정기준: **계약상태=유지, 납입상태=정상, 건당 30만원 한도**
+            - 인정기준: **계약상태=유지 또는 청약, 납입상태=정상, 건당 30만원 한도**
             - 우선순위: S급 2만원 이하, A급 5만원 이하, B급 그 외
             """
         )
@@ -577,7 +577,7 @@ def main() -> None:
     premium_col = st.selectbox("보험료 기준 컬럼", premium_candidates, index=0)
     col_a, col_b = st.columns(2)
     with col_a:
-        filter_active = st.checkbox("계약상태=유지만 반영", value=True)
+        filter_valid_status = st.checkbox("계약상태=유지/청약만 반영", value=True)
     with col_b:
         filter_normal_payment = st.checkbox("납입상태=정상만 반영", value=True)
 
@@ -653,7 +653,7 @@ def main() -> None:
                     part_df,
                     premium_col=premium_col,
                     promotion_type=ptype,
-                    filter_active=filter_active,
+                    filter_valid_status=filter_valid_status,
                     filter_normal_payment=filter_normal_payment,
                 )
                 results[ptype] = {"call_list": call_list, "target": target, "metrics": metrics}
@@ -665,7 +665,7 @@ def main() -> None:
                         pd.DataFrame(columns=df.columns),
                         premium_col=premium_col,
                         promotion_type=ptype,
-                        filter_active=filter_active,
+                        filter_valid_status=filter_valid_status,
                         filter_normal_payment=filter_normal_payment,
                     )
                     results[ptype] = {"call_list": empty_call, "target": empty_target, "metrics": empty_metrics}
